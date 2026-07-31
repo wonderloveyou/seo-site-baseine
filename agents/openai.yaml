@@ -1,0 +1,4 @@
+interface:
+  display_name: "SEO Site Baseline"
+  short_description: "Evidence-led SEO, analytics, and AI baselines"
+  default_prompt: "Use $seo-site-baseline to audit this site from available evidence and produce a prioritized, verification-aware action plan."
