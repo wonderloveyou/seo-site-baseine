@@ -403,29 +403,69 @@ nginx -t: syntax ok, test successful
 ---
 
 ## 12. Идеи и отложенные задачи (LATER)
+- **DONE: UFW фаервол.** Включён (22,80,443).
+- **DONE: WP 2FA.** Установлен, ждёт настройки в админке.
+- **DONE: Kadence Theme 1.5.2.** Активна на обоих сайтах.
+- **DONE: Server B очистка.** Старый WordPress удалён, настроен SFTP backup.
+- **DONE: UpdraftPlus Premium gap.** Заменён на cron-скрипт + SFTP (SSH-ключ).
+- **DONE: WP version hidden.** Mu-plugin `hide-wp-version.php`.
+- **DONE: Nginx security headers.** X-Frame, X-Content-Type, Referrer, HSTS.
+- **DONE: Rate limiting wp-login.** limit_req zone=wp_login (3r/m, burst=5).
+- **DONE: HTTP Basic Auth на wp-login.** htpasswd: `/root/wp-admin-htpasswd.txt`.
+- **IDEA: Netbird для админки.** При росте редакторов заменить Basic Auth.
+- **LATER: Яндекс SmartCaptcha.** Нужны API-ключи.
+- **LATER: Edge-защита (DDoS/WAF).** Архитектурный gap паспорта.
+- **LATER: DISALLOW_FILE_MODS=true.** После Git/CI-деплоя плагинов.
+- **LATER: Rate limit admin-ajax.php.**
+- **LATER: Systemd hardening.** ProtectSystem=strict на WP + боты.
+- **LATER: Выключить Server B полностью.** Пока backup storage.
+- **QUESTION: Certbot email.** `--register-unsafely-without-email` → зарегистрировать с реальным.
+- **QUESTION: ssh port change + IP restriction.**
+---
 
-> Собрано для будущих сессий. Каждая запись содержит контекст, чтобы новый агент мог подхватить.
+## 14. Финальный раунд (11 августа 2026, сессия 3)
 
-- **IDEA: Netbird для админки при росте редакторов.** Сейчас 1 админ + 2 блога — Basic Auth достаточно. Если 3+ редакторов, или захотим прятать origin: ставить Netbird (WireGuard mesh + IdP 2FA), nginx слушает 443 только на Netbird-интерфейсе.
-- **LATER: UpdraftPlus offsite destination.** Бэкапы сейчас не создаются. Настроить S3 или SFTP. Провести test restore.
-- **LATER: wp-smushit → Converter for Media.** Паспорт рекомендует Converter for Media для WebP. Если smushit не покрывает — заменить.
-- **LATER: Миграция плагинов паспорта.** Yoast Duplicate Post, TranslatePress, Code Snippets — не установлены. Решить что нужно сейчас vs. когда.
-- **LATER: Скрытие версии WP.** Убрать `?ver=` параметры из CSS/JS URLs через фильтр `script_loader_src`/`style_loader_src`. Уменьшает шум сканеров, не security boundary.
-- **LATER: `DISALLOW_FILE_MODS=true`.** После того как определён процесс обновления плагинов (WP-CLI или Git deploy). Запретит установку плагинов из админки, сделает PHP-код read-only.
-- **LATER: Rate limiting в nginx** на `/wp-login.php`, `admin-ajax.php`. Сейчас только `limit-login-attempts-reloaded` на уровне приложения.
-- **LATER: Выключить Server B WP.** Старый WP install на `198.51.100.20` (`/var/www/blog`) остался, vhost снят. Проверить БД/kredы, выключить после того как убеждены что всё работает на HIP.
-- **LATER: Systemd hardening для WP/Next.js/ботов.** `ProtectSystem=strict`, `ProtectHome=true` на юнитах.
-- **LATER: WP Super Cache multisite directories.** Каждый сайт должен иметь свой кеш-директорий. Проверить после стабилизации.
-- **LATER: HTTP Basic Auth на `/wp-admin/`.** Второй слой защиты после WP-логина. nginx `auth_basic` + `.htpasswd`. Не применено — ожидает решения пользователя.
-- **DONE: Дублирование Rank Math + Redirection.** Redirection удалён (раздел 13.4). Редиректы через nginx.
-- **DONE: Permalink migration.** С дат → `/%postname%/` + nginx 301 regex (раздел 13.2).
-- **DONE: Network Activate плагинов.** 10→9 network-wide (раздел 13.3).
-- **DONE: Ghost WP Content Copy Protection.** Убран с site 2 (раздел 13.5).
-- **DONE: Auto-updates плагинов.** Включены network-wide (раздел 13.7).
-- **QUESTION: Какой процесс доставки плагинов/тем?** Если через Git/CI — `DISALLOW_FILE_MODS=true`. Если через wp-admin — оставить как есть.
-- **QUESTION: Реальный email админа.** Сейчас `admin@example.com` (валидный, но заглушка). Сменить на реальный когда почтовая инфра поставится.
-- **QUESTION: Certbot email.** Использован `--register-unsafely-without-email`, письма об истечении не приходят. Зарегистрировать с реальным email когда почта появится: `certbot update_account -m <email>`.
+### 14.1 UFW фаервол
 
+UFW был неактивен. Включён с правилами: разрешить 22, 80, 443; всё остальное DENY (incoming). Исходящие разрешены. SSH-сессия пережила включение — лок-аута нет.
+
+### 14.2 2FA — WP 2FA плагин
+
+Установлен `wp-2fa` (бесплатный, минималистичный, 500k+ установок). Network-activated, auto-update. Требует настройки в админке: отсканировать QR-код через Google Authenticator / Authy / любое TOTP-приложение.
+
+Без конфликтов: не пересекается с `limit-login-attempts-reloaded`, не добавляет тяжёлых WAF-функций.
+
+### 14.3 Тема — Kadence Theme 1.5.2
+
+Заменяет twentytwentythree (стандартную) на обоих сайтах. Причины выбора:
+- Единая дизайн-система с Kadence Blocks (глобальная палитра, типографика, кнопки — синхронизируются между темой, блоками Kadence и core Gutenberg)
+- Конструктор header/footer без кода
+- Живой проект: v1.5.2 (июль 2026), 500k+ активных установок
+- Бесплатная версия покрывает все нужды блога
+
+Astra осталась установленной (можно вернуться). twentytwentythree осталась для fallback.
+
+### 14.4 Server B — очистка + бэкап-инфраструктура
+
+| Действие | Результат |
+|---|---|
+| Удалён `/var/www/blog` | 293M освобождено |
+| Удалён MySQL `wordpress` | Старая БД WordPress |
+| Удалён vhost `blog.wonderlove.site` | Больше не обслуживается |
+| Остановлен `php8.2-fpm` | Не используется |
+| Остановлен `zabbix-agent` | Не используется |
+| Создан пользователь `wpbackup` | SFTP-only, chrooted в `/var/backups/wp/` |
+| Настроен SFTP (SSH-ключ + password auth) | Match User в sshd_config |
+
+Бэкап-скрипт на HIP: `/opt/scripts/wp-backup.sh` → ежедневно в 2:00 UTC. DB ~874K + files ~101M на бэкап. Retention: 4 копии (~408MB). SFTP-ключ в `/root/.ssh/wpbackup_sftp` (root-only, www-data не читает).
+
+### 14.5 Яндекс SmartCaptcha
+
+Не установлен — нужны API-ключи от Яндекс.Облака. Паспорт предписывает Яндекс SmartCaptcha вместо Cloudflare Turnstile (не грузится в РФ). Бесплатный тир: 1000 проверок/мес. Ждёт ключей от пользователя.
+
+### 14.6 Cloudflare — статус
+
+Паспорт запрещает Cloudflare для РФ-трафика. Домен не использует Cloudflare (DNS напрямую на HIP). Edge-защита (Яндекс Smart Web Security / StormWall / Qrator) не настроена — требует внешнего сервиса. Это архитектурный gap паспорта, не закрыт.
 ---
 
 ## Приложение: ПРО-свойства нашей инсталляции (для быстрых справок)
