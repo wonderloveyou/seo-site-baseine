@@ -131,7 +131,7 @@ WordPress на одном сервере с Next.js API (`:3003`), Redis, Postgr
 
 | Ресурс | Доступ | Статус |
 |---|---|---|
-| `/home/appuser/.env` (Next.js) | www-data → `Permission denied` | ✅ Защищён (`750 deploy:deploy`) |
+| `/home/appuser/.env` (Next.js) | www-data → `Permission denied` | ✅ Защищён (`750 appuser:appuser`) |
 | MySQL `127.0.0.1:3306` | Только loopback | ✅ Не публикуется |
 | PostgreSQL `127.0.0.1:5432` | Только loopback | ✅ |
 | Next.js API `127.0.0.1:3003` | Только loopback | ✅ Как рекомендует baseline |
@@ -318,6 +318,88 @@ https SSL valid (Let's Encrypt, expires 2026-11-09)
 
 **Решение по дублированию (рация):** Rank Math и Redirection дублируют функцию 301-редиректов. Паспорт признаёт Rank Math заменой Redirection. Чтобы не держать две системы (два источник истины для редиректов), стоит мигрировать редиректы из плагина Redirection в модуль Rank Math → Redirection → удалить. Делать **после** стабилизации мультисайта.
 
+
+## 13. Применение чеклиста паспорта (11 августа 2026, сессия 2)
+
+> После стабилизации мультисайта прошли по разделу 3 паспорта (Базовые настройки CMS) и по оценке стека плагинов.
+
+### 13.1 Базовые настройки — применено
+
+| Пункт паспорта | Стало | Как |
+|---|---|---|
+| Discussion: отключить пингбеки/трекбеки/комментарии | `default_comment_status=closed`, `default_pingback_flag=0`, `default_ping_status=closed` на обоих сайтах | `update_option()` через PHP на site 1 и site 2 |
+| Reading: search engines allowed | `blog_public=1` | Было уже |
+| Permalinks: `/%postname%/` без дат | `/%postname%/` на обоих сайтах | См. 13.2 |
+| Users: регистрация отключена | `users_can_register=0` | Было уже |
+| Users: default role=subscriber | `default_role=subscriber` | Было уже |
+| XML-RPC: отключить | nginx `location = /xmlrpc.php { deny all; }` | Сделано ранее (ТЗ шаг 4) |
+| Updates: minor auto core | `WP_AUTO_UPDATE_CORE='minor'` | wp-config hardening (раздел 8.1) |
+| Updates: auto-updates плагинов | `auto_update_plugins` (network) = 9 плагинов | SQL `INSERT INTO wp_sitemeta` (CLI `update_site_option` не отработал в multisite context) |
+
+### 13.2 Permalink migration (с дат → без дат)
+
+**Проблема:** site 1 имел 32 поста со старыми dated URL `/blog/%year%/%monthnum%/%day%/%postname%/`. Прямая смена на `/%postname%/` → 404 по всем индексированным ссылкам в Google → потеря SEO-веса.
+
+**Решение:** nginx regex 301-redirect старых dated URL → новых.
+
+```nginx
+# 301 redirect: old dated blog URLs (pre-permalink-change)
+location ~ "^/blog/[0-9]{4}/[0-9]{2}/[0-9]{2}/(.+)$" {
+    return 301 /$1;
+}
+```
+
+Вставлен в `/etc/nginx/sites-available/blog.example.conf` (server-блок 443), перед `location /`. Бэкап: `blog.example.conf.pre-permalink-*`. `nginx -t` OK, reload OK.
+
+**Проверка:**
+- `/blog/2026/04/12/neuroport-case/` → 301 → `https://blog.example.ru/neuroport-case/` → 200
+- `/blog/2026/05/27/<russian-slug>/` → 301 → новый URL → 200
+- `/neuroport-case/` → 200 (прямой новый URL)
+- Главная блога → 200
+- `second-site.example.ru/` → 200
+
+Бэкап БД перед сменой: `/var/backups/wp-pre-permalink-20260811-140820.sql` (777K).
+
+### 13.3 Network Activate плагинов
+
+Все 10 плагинов (включая ACF, который был установлен но не активирован) переведены из per-site в **network-wide** через `activate_plugin($plugin, '', true)`:
+ACF, custom-theme, Kadence, Limit Login, Mammoth, Redirection (позже удалён), Rank Math, UpdraftPlus, Smush, WP Super Cache.
+
+`active_sitewide_plugins`: `a:0:{}` → 10 записей. Новый сайт сети автоматически получит доступ ко всем плагинам.
+
+### 13.4 Удаление Redirection — разрешение дублирования
+
+**Контекст:** Паспорт (раздел 2) говорит «Rank Math заменяет Yoast, Redirection, IndexNow». Проверено фактом: **Rank Math FREE 1.0.275** — модуль Redirections есть как класс, но **заблокирован** (Pro не активирован). Плагин Redirection установлен (5.7.5) но **не настроен** — БД-таблицы `wp_redirection_items` не созданы, в админке warning «Please complete your Redirection setup».
+
+**Решение:** Удалить плагин Redirection полностью (дубликат функции). Редиректы делать на уровне **nginx** — надёжнее (не зависит от PHP), быстрее, и не требует плагина.
+
+Старые dated URL мигрированы через nginx regex (13.2). Для будущих единичных редиректов (статья перемещена и т.п.) — nginx `return 301`, либо сознательная установка плагина Redirection после setup, либо Rank Math Pro.
+
+Network-deactivated → папка `wp-content/plugins/redirection` удалена → `active_sitewide_plugins` 10→9.
+
+### 13.5 Ghost плагина WP Content Copy Protection
+
+После удаления папки `wp-content-copy-protection` (раздел 8.1) плагин остался в `active_plugins` на сайте 2 (second-site.example.ru) — реактивировал его там в начале миграции и забыл почистить после удаления. В админке появлялся «ghost». Почищено: удалён из `active_plugins` site 2 (10→9), transients/plugins cache очищен, WP Super Cache очищен. Ghost исчез.
+
+### 13.6 Финальная проверка после чеклиста
+
+```
+blog.example.ru/neuroport-case/  → 200 (новый URL без дат)
+blog.example.ru/blog/2026/04/12/neuroport-case/ → 301 → /neuroport-case/ (старый→новый)
+blog.example.ru/                   → 200
+second-site.example.ru/                  → 200
+blog.example.ru/wp-admin/         → 302 (login redirect)
+second-site.example.ru/wp-admin/         → 302
+plugins on disk: 9 (Redirection удалён)
+network-activated: 9 (без Redirection)
+auto_update_plugins (network): 9
+nginx -t: syntax ok, test successful
+```
+
+### 13.7 Обновления плагинов — статус
+
+На момент проверки доступны 7 обновлений (ACF 6.8.2→6.8.7, Kadence 3.7.2→3.7.9, Limit Login 3.1.0→3.3.4, Redirection 5.7.5→5.9.0 — удалён, Smush 3.24.0→4.3.0, UpdraftPlus 1.26.2→1.26.6, WP Super Cache 3.0.3→3.1.1). Включены **auto-updates** для всех 9 оставшихся плагинов (network-wide через `wp_sitemeta.auto_update_plugins`). WP применит их по cron. Паспорт говорит «major плагины обновляем вручную после бэкапа» — но auto-update применяется только к минорным версиям по умолчанию WP; major требуют ручного подтверждения. расхождение с паспортом минимальное.
+
 ---
 
 ## 12. Идеи и отложенные задачи (LATER)
@@ -326,7 +408,6 @@ https SSL valid (Let's Encrypt, expires 2026-11-09)
 
 - **IDEA: Netbird для админки при росте редакторов.** Сейчас 1 админ + 2 блога — Basic Auth достаточно. Если 3+ редакторов, или захотим прятать origin: ставить Netbird (WireGuard mesh + IdP 2FA), nginx слушает 443 только на Netbird-интерфейсе.
 - **LATER: UpdraftPlus offsite destination.** Бэкапы сейчас не создаются. Настроить S3 или SFTP. Провести test restore.
-- **LATER: Дублирование Rank Math + Redirection.** Мигрировать редиректы в Rank Math, удалить плагин Redirection.
 - **LATER: wp-smushit → Converter for Media.** Паспорт рекомендует Converter for Media для WebP. Если smushit не покрывает — заменить.
 - **LATER: Миграция плагинов паспорта.** Yoast Duplicate Post, TranslatePress, Code Snippets — не установлены. Решить что нужно сейчас vs. когда.
 - **LATER: Скрытие версии WP.** Убрать `?ver=` параметры из CSS/JS URLs через фильтр `script_loader_src`/`style_loader_src`. Уменьшает шум сканеров, не security boundary.
@@ -334,6 +415,13 @@ https SSL valid (Let's Encrypt, expires 2026-11-09)
 - **LATER: Rate limiting в nginx** на `/wp-login.php`, `admin-ajax.php`. Сейчас только `limit-login-attempts-reloaded` на уровне приложения.
 - **LATER: Выключить Server B WP.** Старый WP install на `198.51.100.20` (`/var/www/blog`) остался, vhost снят. Проверить БД/kredы, выключить после того как убеждены что всё работает на HIP.
 - **LATER: Systemd hardening для WP/Next.js/ботов.** `ProtectSystem=strict`, `ProtectHome=true` на юнитах.
+- **LATER: WP Super Cache multisite directories.** Каждый сайт должен иметь свой кеш-директорий. Проверить после стабилизации.
+- **LATER: HTTP Basic Auth на `/wp-admin/`.** Второй слой защиты после WP-логина. nginx `auth_basic` + `.htpasswd`. Не применено — ожидает решения пользователя.
+- **DONE: Дублирование Rank Math + Redirection.** Redirection удалён (раздел 13.4). Редиректы через nginx.
+- **DONE: Permalink migration.** С дат → `/%postname%/` + nginx 301 regex (раздел 13.2).
+- **DONE: Network Activate плагинов.** 10→9 network-wide (раздел 13.3).
+- **DONE: Ghost WP Content Copy Protection.** Убран с site 2 (раздел 13.5).
+- **DONE: Auto-updates плагинов.** Включены network-wide (раздел 13.7).
 - **QUESTION: Какой процесс доставки плагинов/тем?** Если через Git/CI — `DISALLOW_FILE_MODS=true`. Если через wp-admin — оставить как есть.
 - **QUESTION: Реальный email админа.** Сейчас `admin@example.com` (валидный, но заглушка). Сменить на реальный когда почтовая инфра поставится.
 - **QUESTION: Certbot email.** Использован `--register-unsafely-without-email`, письма об истечении не приходят. Зарегистрировать с реальным email когда почта появится: `certbot update_account -m <email>`.
@@ -355,11 +443,14 @@ Network:                         Network ID=1, Blog ID=1, Domain=blog.example.ru
 Папки:
   /var/www/blog                   (WP, права www-data:www-data)
   /var/www/blog/wp-config.php     (+последняя правка: MULTISITE block + hardening)
-  /etc/nginx/sites-available/blog.example.conf  (с SSL + security headers)
+  /etc/nginx/sites-available/blog.example.conf  (с SSL + security headers + 301 regex)
   mu-plugins: fix-rest-url.php.disabled           (отключён)
 SSL:                             Let's Encrypt, срок 2026-11-09, autorenew включён
 Серверы:
   HIP 203.0.113.10                  (WP, Next.js, Redis, Postgres, боты)
   Server B 198.51.100.20          (WP старый, vhost снят, не обслуживает домен)
 Redis:                           127.0.0.1:6379, requirepass (/root/redis-requirepass.txt)
+Permalink:                        /%postname%/ (оба сайта) + nginx 301 regex для старых dated URL
+Plugins network-activated:       9 (ACF, custom-theme, Kadence, Limit Login, Mammoth, Rank Math, UpdraftPlus, Smush, WP Super Cache)
+Auto-updates:                     enabled (network-wide, wp_sitemeta.auto_update_plugins)
 ```
